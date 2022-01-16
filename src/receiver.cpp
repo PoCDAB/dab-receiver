@@ -48,10 +48,28 @@
 #include <cstring>
 #include <future>
 #include <iostream>
+#include <fstream>
 
 #include <unistd.h>
 
 constexpr char *progname = "dab-datarecv";
+
+// Make _kHz and co usable
+using namespace dab::literals;
+
+//ensemblename tied to the frequency
+const std::map<std::string,dab::frequency> mapOfMarks = {
+	{"5A", 174928_kHz},{"5B", 176640_kHz},{"5C", 178352_kHz},{"5D", 180064_kHz},
+	{"6A", 181936_kHz},{"6B", 183648_kHz},{"6C", 185360_kHz},{"6D", 187072_kHz},
+	{"7A", 188928_kHz},{"7B", 190640_kHz},{"7C", 192352_kHz},{"7D", 194064_kHz},
+	{"8A", 195936_kHz},{"8B", 197648_kHz},{"8C", 199360_kHz},{"8D", 201072_kHz},
+	{"9A", 202928_kHz},{"9B", 204640_kHz},{"9C", 206352_kHz},{"9D", 208064_kHz},
+	{"10A",209936_kHz},{"10B", 211648_kHz},{"10C", 213360_kHz},{"10D", 215072_kHz},
+	{"11A", 216928_kHz},{"11B", 218640_kHz},{"11C", 220352_kHz},{"11D", 222064_kHz},
+	{"12A", 223936_kHz},{"12B", 225648_kHz},{"12C", 227360_kHz},{"12D", 229072_kHz},
+	{"13A", 230784_kHz},{"13B", 232496_kHz},{"13C", 234208_kHz},{"13D", 235776_kHz},
+	{"13E", 237488_kHz},{"13F", 239200_kHz}
+};
 
 int usage(int retval)
 {
@@ -102,6 +120,28 @@ int main(int argc, char **argv)
 	return 0;
 }
 #else
+static int dabmsg_id = 0;
+
+bool save_dab_message(std::vector<uint8_t> &data)
+{
+	std::ofstream dabmsg("dabmsgs/" + std::to_string(dabmsg_id) + ".txt");
+	dabmsg_id++;
+
+	if (!dabmsg.is_open())
+		return false;
+
+	/* Write the message to a file for use with cfns-half-duplex */
+	dabmsg << dabmsg_id << std::endl;	/* ID: increments with every received message */
+	dabmsg << 4 << std::endl;		/* TYPE: always 4 for some reason */
+	dabmsg << "other" << std::endl;		/* CATEGORY: to be determined later */
+	for (auto &byte : data)
+		dabmsg << byte;			/* DATA */
+
+	dabmsg.close();
+
+	return true;
+}
+
 int main(int argc, char **argv)
 {
 	// Very crude argument handling. DON'T USE THIS IN PRODUCTION!
@@ -113,9 +153,6 @@ int main(int argc, char **argv)
 	// Prepare are data queues for acquisition and demodulation
 	dab::sample_queue_t samples{};
 	dab::symbol_queue_t symbols{};
-
-	// Make _kHz and co usable
-	using namespace dab::literals;
 
 	// Prepare the input device
 	dab::rtl_device device{samples};
@@ -148,6 +185,7 @@ int main(int argc, char **argv)
 
 	std::clog << " OK\n";
 	std::clog << "Name: " << ensemble.label() << std::endl;
+	std::clog << "Waiting for messages..." << std::endl;
 
 	for (auto const & service : ensemble.services()) {
 		std::clog << "service \"" << service.second->label() << "\" t:" << (std::uint8_t) service.second->type() << "\n";
@@ -190,8 +228,12 @@ int main(int argc, char **argv)
 				return;
 			}
 
-			/* FIXME HACKZZZ: fix the parser instead of this workaround */
+			/* FIXME HACKZZZ: fix the parser instead of this workaround
+			 *                is this padding?
+			 * FIXME there's nicer ways to do this of course
+			 */
 			int bytecnt = 0, skip = 0;
+			std::vector<uint8_t> dabmsg;
 			for (unsigned char c : std::move(datagroup.second)) {
 				bytecnt++;
 
@@ -203,8 +245,11 @@ int main(int argc, char **argv)
 				if (bytecnt == 1024)
 					skip = 6;
 
-				std::cout << c;
+				dabmsg.push_back(c);
 			}
+
+			if (!save_dab_message(dabmsg))
+				std::cerr << "failed to write dabmsg" << std::endl;
 		});
 	}
 
