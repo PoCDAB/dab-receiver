@@ -14,6 +14,4 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/config/Base.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/config/Options.cmake")
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/config/Dependencies.cmake")
 
-include_directories("include")
-
 add_subdirectory("src")

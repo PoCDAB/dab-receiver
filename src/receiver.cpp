@@ -2,6 +2,7 @@
  * Copyright (C) 2017 Opendigitalradio (http://www.opendigitalradio.org/)
  * Copyright (C) 2017 Felix Morgner <felix.morgner@hsr.ch>
  * Copyright (C) 2017 Tobias Stauber <tobias.stauber@hsr.ch>
+ * Copyright (C) 2021 - 2022 Bastiaan Teeuwen <bastiaan@mkcl.nl>
  *
  * Redistribution and use in source and binary forms, with or without modification,
  * are permitted provided that the following conditions are met:
@@ -29,8 +30,6 @@
  * SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include "tun_device.h"
-
 #include <dab/packet/packet_parser.h>
 #include <dab/msc_data_group/msc_data_group_parser.h>
 #include <dab/ensemble/ensemble.h>
@@ -46,133 +45,174 @@
 #include <asio/signal_set.hpp>
 
 #include <cstdint>
+#include <cstring>
 #include <future>
 #include <iostream>
 
-int main(int argc, char * * argv)
-  {
+#include <unistd.h>
 
-  // Very crude argument handling. DON'T USE THIS IN PRODUCTION!
-  if(argc != 3)
-    {
-    std::cerr << "usage: data_over_dab <destination_ip> <packet_address>\n";
-    return 1;
-    }
+constexpr char *progname = "dab-datarecv";
 
-  // Prepare are data queues for acquisition and demodulation
-  dab::sample_queue_t samples{};
-  dab::symbol_queue_t symbols{};
+int usage(int retval)
+{
+	std::cout <<
+		"usage: " << progname << " frequency:service_label:packet_address\n" <<
+		"\n" <<
+		"" << retval << std::endl;
+}
 
-  // Make _kHz and co usable
-  using namespace dab::literals;
+#if 0
+int main(int argc, char **argv)
+{
+	if (argc < 2) {
+		return usage(1);
+	}
 
-  // Prepare the input device
-  dab::rtl_device device{samples};
-  // device.enable(dab::device::option::automatic_gain_control);
-  device.tune(218640_kHz);
-  device.gain(40_dB);
+	/* parse the frequency, service label and packet address */
+	char *s;
+	unsigned long freq;
 
-  // Start sample acquisition
-  auto deviceRunner = std::async(std::launch::async, [&]{ device.run(); });
+	if (!(s = std::strtok(argv[1], ":")))
+		return usage(1);
+	try {
+		freq = std::stoul(s, nullptr, 10);
+	} catch (std::invalid_argument e) {
+		std::cout << progname << ": frequency must be in kHz" << std::endl;
+		return 1;
+	}
 
-  // Initialize the demodulator
-  dab::demodulator demod{samples, symbols, dab::kTransmissionMode1};
-  auto demodRunner = std::async(std::launch::async, [&]{ demod.run(); });
+	if (!(s = std::strtok(nullptr, ":")))
+		return usage(1);
+	std::string label(s);
 
-  // Create an io_service for our virtual network device
-  asio::io_service eventLoop{};
+	if (!(s = std::strtok(nullptr, ":")))
+		return usage(2);
+	std::string addr{s};
 
-  // We need a dummy load or else the io_service run() function return immediately
-  asio::io_service::work dummyLoad{eventLoop};
-  auto tunRunner = std::async(std::launch::async, [&]{ eventLoop.run(); });
+	std::cout <<freq<<label<<addr<<std::endl;
 
-  // Create our virtual network device
-  tun_device tunnel{eventLoop, "dabdata"};
-  auto destination = std::string{argv[1]};
-  tunnel.address(destination);
-  auto error = tunnel.up();
-  if(error)
-    {
-    throw error.message();
-    }
+	while ((auto opt == getopt(argc, argv, "a")) != -1) {
+		switch (opt) {
+		case "a":
+			std::cout << "!";
+			break;
+		}
+	}
 
-  auto && signals = asio::signal_set{eventLoop, SIGINT};
-  signals.async_wait([&](asio::error_code const err, int const){
-    if(!err)
-      {
-      device.stop();
-      demod.stop();
-      eventLoop.stop();
-      std::cout << "Received SIGNINT. Stopping\n";
-      }
-  });
+	return 0;
+}
+#else
+int main(int argc, char **argv)
+{
+	// Very crude argument handling. DON'T USE THIS IN PRODUCTION!
+	if(argc != 2) {
+		std::cerr << "usage: receiver <packet_address>\n";
+		return 1;
+	}
 
-  // Initialize the decoder
-  auto ensemble = dab::ensemble{symbols, dab::kTransmissionMode1};
+	// Prepare are data queues for acquisition and demodulation
+	dab::sample_queue_t samples{};
+	dab::symbol_queue_t symbols{};
 
-  // Prepare our packet parser
-  auto packetParser = dab::packet_parser{std::uint16_t(std::stoi(argv[2]))};
+	// Make _kHz and co usable
+	using namespace dab::literals;
 
-  // Get the ensemble ready
-  while(!ensemble && ensemble.update());
+	// Prepare the input device
+	dab::rtl_device device{samples};
+	device.enable(dab::device::option::automatic_gain_control);
+	device.tune(197648_kHz);
 
-  // Check if we were able to succcessfully prepare the ensemble
-  if(!ensemble)
-    {
-    return 1;
-    }
+	// Start sample acquisition
+	auto deviceRunner = std::async(std::launch::async, [&]{ device.run(); });
 
-  // Activate our service
-  bool activated{};
-  if(!activated)
-    {
-    for(auto const & service : ensemble.services())
-      {
-      // Check for a data service with a valid primary service component
-      if(service.second->type() == dab::service_type::data && service.second->primary())
-        {
-        // Check if the primary service component claims to carry IPDT
-        if(service.second->primary()->type() == 59)
-          {
-          // Register our "data received" callback with the service
-          ensemble.activate(service.second, [&](std::vector<std::uint8_t> data){
-            // Parse the received data
-            auto parseResult = packetParser.parse(data);
-            if(parseResult.first == dab::parse_status::ok)
-              {
-              // Parse the received data back into an MSC data group
-              auto datagroupParser = dab::msc_data_group_parser{};
-              parseResult = datagroupParser.parse(parseResult.second);
+	// Initialize the demodulator
+	dab::demodulator demod{samples, symbols, dab::kTransmissionMode1};
+	auto demodRunner = std::async(std::launch::async, [&]{ demod.run(); });
 
-              if(parseResult.first == dab::parse_status::ok)
-                {
-                // Enqueue the data to be sent to the operating system
-                tunnel.enqueue(std::move(parseResult.second));
-                }
-              else
-                {
-                std::cout << "datagroupError: " << std::uint32_t(parseResult.first) << '\n';
-                }
-              }
-            else if(parseResult.first != dab::parse_status::incomplete)
-              {
-              std::cout << "packetError: " << std::uint32_t(parseResult.first) << '\n';
-              std::cout << std::endl;
-              }
+	std::clog << "Connecting...";
 
-            });
+	// Initialize the decoder
+	dab::ensemble ensemble(symbols, dab::kTransmissionMode1);
 
-          // Prevent infinite reactivation loops
-          activated = true;
-          }
-        }
-      }
-    }
+	// Prepare our packet parser
+	auto packetParser = dab::packet_parser{std::uint16_t(std::stoi(argv[1]))};
 
-  // Consume data as long as something comes in
-  while(!eventLoop.stopped() && ensemble.update())
-    {
+	// Get the ensemble ready
+	while (!ensemble && ensemble.update());
 
-    }
-  }
+	// Check if we were able to succcessfully prepare the ensemble
+	if (!ensemble) {
+		std::clog << " FAIL\n";
+		return 1;
+	}
 
+	std::clog << " OK\n";
+	std::clog << "Name: " << ensemble.label() << std::endl;
+
+	for (auto const & service : ensemble.services()) {
+		std::clog << "service \"" << service.second->label() << "\" t:" << (std::uint8_t) service.second->type() << "\n";
+
+		/* Check for a data service with a valid primary service component */
+		if (service.second->type() != dab::service_type::data || !service.second->primary())
+			continue;
+
+		/* Check if the primary service component claims to carry IPDT */
+		if (service.second->primary()->type() != 59)
+			continue;
+
+		std::clog << "Registering service \"" << service.second->label() << "\"\n";
+
+		/* Register our "data received" callback with the service */
+		ensemble.activate(service.second, [&] (std::vector<std::uint8_t> data)
+		{
+			/* Parse the received data */
+			auto packet = packetParser.parse(data);
+
+			/* Not all data has been received yet */
+			if (packet.first == dab::parse_status::incomplete)
+				return;
+
+			/* Return if this is not the right address (likely noise) */
+			if (packet.first == dab::parse_status::invalid_address)
+				return;
+
+			if (packet.first != dab::parse_status::ok) {
+				std::cerr << "packetError: " << std::uint32_t(packet.first) << std::endl;
+				return;
+			}
+
+			/* Parse the received data back into an MSC data group */
+			auto datagroupParser = dab::msc_data_group_parser{};
+			auto datagroup = datagroupParser.parse(packet.second);
+
+			if (datagroup.first != dab::parse_status::ok) {
+				std::cerr << "datagroupError: " << std::uint32_t(datagroup.first) << std::endl;
+				return;
+			}
+
+			/* FIXME HACKZZZ: fix the parser instead of this workaround */
+			int bytecnt = 0, skip = 0;
+			for (unsigned char c : std::move(datagroup.second)) {
+				bytecnt++;
+
+				if (skip > 0) {
+					skip--;
+					continue;
+				}
+
+				if (bytecnt == 1024)
+					skip = 6;
+
+				std::cout << c;
+			}
+		});
+	}
+
+	while (ensemble.update());
+
+	/* properly shutdown demodulator, device, ensemble on Ctrl+C */
+
+	return 0;
+}
+
+#endif
