@@ -52,13 +52,13 @@
 
 #include <unistd.h>
 
-constexpr char *progname = "dab-datarecv";
+constexpr char progname[] = "dab-datarecv";
 
 // Make _kHz and co usable
 using namespace dab::literals;
 
 //ensemblename tied to the frequency
-const std::map<std::string,dab::frequency> mapOfMarks = {
+const std::map<std::string,dab::frequency> channels = {
 	{"5A", 174928_kHz},{"5B", 176640_kHz},{"5C", 178352_kHz},{"5D", 180064_kHz},
 	{"6A", 181936_kHz},{"6B", 183648_kHz},{"6C", 185360_kHz},{"6D", 187072_kHz},
 	{"7A", 188928_kHz},{"7B", 190640_kHz},{"7C", 192352_kHz},{"7D", 194064_kHz},
@@ -71,7 +71,7 @@ const std::map<std::string,dab::frequency> mapOfMarks = {
 	{"13E", 237488_kHz},{"13F", 239200_kHz}
 };
 
-int usage(int retval)
+void usage(int retval)
 {
 	std::cout <<
 		"usage: " << progname << " frequency:service_label:packet_address\n" <<
@@ -157,7 +157,7 @@ int main(int argc, char **argv)
 	// Prepare the input device
 	dab::rtl_device device{samples};
 	device.enable(dab::device::option::automatic_gain_control);
-	device.tune(197648_kHz);
+	device.tune(channels.find("8B")->second);
 
 	// Start sample acquisition
 	auto deviceRunner = std::async(std::launch::async, [&]{ device.run(); });
